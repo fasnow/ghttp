@@ -34,13 +34,14 @@ var (
 )
 
 type Client struct {
-	client        *http.Client
-	mutex         sync.Mutex
-	globalProxy   *url.URL
-	globalTimeout time.Duration
-	Proxy         *url.URL
-	Timeout       time.Duration
-	Context       *context.Context
+	client                  *http.Client
+	mutex                   sync.Mutex
+	globalProxy             *url.URL
+	globalTimeout           time.Duration
+	Proxy                   *url.URL
+	Timeout                 time.Duration
+	Context                 *context.Context
+	StopWhenContextCanceled bool
 }
 
 type Options struct {
@@ -137,6 +138,14 @@ func (g *Client) Do(request *http.Request, option ...Options) (*http.Response, e
 		return client.Do(request)
 	}
 	g.mutex.Unlock()
+	if g.StopWhenContextCanceled {
+		select {
+		case <-(*g.Context).Done():
+			return nil, (*g.Context).Err()
+		default:
+			return g.client.Do(request)
+		}
+	}
 	return g.client.Do(request)
 }
 
