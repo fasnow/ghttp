@@ -17,7 +17,7 @@ import (
 // Do() > 全局 > 初始化 > 默认
 
 var (
-	UserAgents = []string{
+	userAgents = []string{
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.37",
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0",
@@ -28,20 +28,28 @@ var (
 var (
 	globalProxyEnabled   bool
 	globalTimeoutEnabled bool
-	globalProxy          *url.URL
-	globalTimeout        time.Duration
-	defaultHttpTimeout   = 20 * time.Second
+
+	globalProxyMutex sync.Mutex
+	globalProxy      *url.URL
+
+	globalTimeoutMutex sync.Mutex
+	globalTimeout      time.Duration
+
+	defaultHttpTimeoutMutex sync.Mutex
+	defaultHttpTimeout      = 20 * time.Second
 )
 
+// Client 超时和代理的优先级
+// Do() > 全局 > 初始化 > 默认
 type Client struct {
-	client                  *http.Client
-	mutex                   sync.Mutex
-	globalProxy             *url.URL
-	globalTimeout           time.Duration
-	Proxy                   *url.URL
-	Timeout                 time.Duration
-	Context                 *context.Context
-	StopWhenContextCanceled bool
+	http                *http.Client
+	mutex               sync.Mutex
+	globalProxy         *url.URL
+	globalTimeout       time.Duration
+	Proxy               *url.URL
+	Timeout             time.Duration
+	Context             *context.Context
+	StopWhenContextDone bool
 }
 
 type Options struct {
@@ -73,80 +81,79 @@ func (g *Client) new(timeout ...time.Duration) *http.Client {
 }
 
 func (g *Client) Do(request *http.Request, option ...Options) (*http.Response, error) {
-	//只有第一次调用时会执行
-	if g.client == nil {
-		g.client = g.new()
-	}
-
 	g.mutex.Lock()
+	//只有第一次调用时会执行
+	if g.http == nil {
+		g.http = g.new()
+	}
 	if globalTimeoutEnabled {
-		g.client.Timeout = globalTimeout
+		g.http.Timeout = globalTimeout
 	} else {
 		if g.Timeout > 0 {
-			g.client.Timeout = g.Timeout
+			g.http.Timeout = g.Timeout
 		} else {
-			g.client.Timeout = defaultHttpTimeout
+			g.http.Timeout = defaultHttpTimeout
 		}
 	}
 	if globalProxyEnabled {
-		g.client.Transport.(*http.Transport).Proxy = http.ProxyURL(globalProxy)
+		g.http.Transport.(*http.Transport).Proxy = http.ProxyURL(globalProxy)
 	} else {
-		g.client.Transport.(*http.Transport).Proxy = http.ProxyURL(g.Proxy)
+		g.http.Transport.(*http.Transport).Proxy = http.ProxyURL(g.Proxy)
 	}
 	if _, ok := request.Header["User-Agent"]; !ok {
-		request.Header.Set("User-Agent", UserAgents[rand.Intn(len(UserAgents))])
+		request.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
 	}
 	if g.Context != nil {
 		request.WithContext(*g.Context)
 	}
 	//设置了参数则只对本次请求生成
 	if len(option) > 0 {
-		var client = g.new()
-		currentProxy := g.client.Transport.(*http.Transport).Proxy
+		var httpClient = g.new()
+		currentProxy := g.http.Transport.(*http.Transport).Proxy
 		op := option[0]
 		newTimeout := op.Timeout
 		newProxy := op.Proxy
 		if newTimeout > 0 {
-			client.Timeout = newTimeout
+			httpClient.Timeout = newTimeout //本次请求
 		} else {
 			if globalTimeoutEnabled {
-				client.Timeout = globalTimeout
+				httpClient.Timeout = globalTimeout //全局超时
 			} else {
 				if g.Timeout > 0 {
-					client.Timeout = g.Timeout
+					httpClient.Timeout = g.Timeout //初始化超时
 				} else {
-					client.Timeout = defaultHttpTimeout
+					httpClient.Timeout = defaultHttpTimeout //默认超时
 				}
 			}
 		}
 		if newProxy != nil {
-			client.Transport.(*http.Transport).Proxy = http.ProxyURL(newProxy)
+			httpClient.Transport.(*http.Transport).Proxy = http.ProxyURL(newProxy) //本次请求
 		} else {
 			if globalProxyEnabled {
-				client.Transport.(*http.Transport).Proxy = http.ProxyURL(globalProxy)
+				httpClient.Transport.(*http.Transport).Proxy = http.ProxyURL(globalProxy) //全局代理
 			} else {
-				client.Transport.(*http.Transport).Proxy = currentProxy
+				httpClient.Transport.(*http.Transport).Proxy = currentProxy //当前代理
 			}
 		}
 		if _, ok := request.Header["User-Agent"]; !ok {
-			request.Header.Set("User-Agent", UserAgents[rand.Intn(len(UserAgents))])
+			request.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
 		}
 		if op.Context != nil {
 			request.WithContext(*op.Context)
 		}
 		g.mutex.Unlock()
-		return client.Do(request)
+		return httpClient.Do(request)
 	}
 	g.mutex.Unlock()
-	if g.StopWhenContextCanceled {
+	if g.StopWhenContextDone {
 		select {
 		case <-(*g.Context).Done():
 			return nil, (*g.Context).Err()
 		default:
-			return g.client.Do(request)
+			return g.http.Do(request)
 		}
 	}
-	return g.client.Do(request)
+	return g.http.Do(request)
 }
 
 func GetResponseBody(body io.ReadCloser) ([]byte, error) {
@@ -167,7 +174,10 @@ func GetResponseBody(body io.ReadCloser) ([]byte, error) {
 	return result, nil
 }
 
+// SetGlobalProxy 全局代理,优先级最高
 func SetGlobalProxy(proxy string) error {
+	globalProxyMutex.Lock()
+	defer globalProxyMutex.Unlock()
 	proxy = strings.TrimSpace(proxy)
 	if proxy == "" {
 		globalProxy = nil
@@ -183,13 +193,29 @@ func SetGlobalProxy(proxy string) error {
 	return nil
 }
 
+// SetGlobalTimeout 全局默认超时时间,优先级最高
 func SetGlobalTimeout(timeout time.Duration) {
+	globalTimeoutMutex.Lock()
+	defer globalTimeoutMutex.Unlock()
 	if timeout > 0 {
-		globalTimeout = defaultHttpTimeout
-		globalTimeoutEnabled = false
-		return
-	} else {
 		globalTimeout = timeout
 		globalTimeoutEnabled = true
+		return
+	} else {
+		globalTimeout = defaultHttpTimeout
+		globalTimeoutEnabled = false
 	}
+}
+
+// SetDefaultTimeout 全局默认超时时间,优先级最低
+func SetDefaultTimeout(timeout time.Duration) {
+	defaultHttpTimeoutMutex.Lock()
+	defer defaultHttpTimeoutMutex.Unlock()
+	if timeout > 0 {
+		defaultHttpTimeout = timeout
+	}
+}
+
+func GetOptionalUserAgents() []string {
+	return userAgents
 }
