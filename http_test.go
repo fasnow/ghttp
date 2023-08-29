@@ -53,9 +53,7 @@ func TestOptionalTimeout1(t *testing.T) {
 func TestOptionalTimeout2(t *testing.T) {
 	client1 := Client{}
 	req1, _ := http.NewRequest("GET", "https://www.baidu.com", nil)
-	resp1, err := client1.Do(req1, Options{
-		Timeout: 1 * time.Microsecond,
-	})
+	resp1, err := client1.Do(req1, SetTimeout(1*time.Microsecond))
 	if err != nil {
 		t.Log(err)
 	} else {
@@ -64,9 +62,7 @@ func TestOptionalTimeout2(t *testing.T) {
 
 	client2 := Client{}
 	req2, _ := http.NewRequest("GET", "https://www.baidu.com", nil)
-	rsp2, err := client2.Do(req2, Options{
-		Timeout: 1 * time.Second,
-	})
+	rsp2, err := client2.Do(req2, SetTimeout(1*time.Microsecond))
 	if err != nil {
 		t.Log(err)
 		return
@@ -99,7 +95,7 @@ func TestOptionalProxy2(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8081")
 	client1 := Client{}
 	req1, _ := http.NewRequest("GET", "https://www.baidu.com", nil)
-	resp1, err := client1.Do(req1, Options{Proxy: u})
+	resp1, err := client1.Do(req1, SetProxy(u))
 	if err != nil {
 		t.Log(err)
 	} else {
@@ -108,12 +104,23 @@ func TestOptionalProxy2(t *testing.T) {
 
 	client2 := Client{}
 	req2, _ := http.NewRequest("GET", "https://www.baidu.com", nil)
-	rsp2, err := client2.Do(req2, Options{Proxy: nil})
+	rsp2, err := client2.Do(req2, SetProxy(nil))
 	if err != nil {
 		t.Log(err)
 		return
 	}
 	t.Log(rsp2.Status)
+}
+
+func TestRedirect(t *testing.T) {
+	client1 := &Client{Redirect: false}
+	req1, _ := http.NewRequest("GET", "http://www.baidu.com", nil)
+	resp1, err := client1.Do(req1)
+	if err != nil {
+		t.Log(err)
+	} else {
+		t.Log(resp1.StatusCode)
+	}
 }
 
 func Test(t *testing.T) {
@@ -132,7 +139,7 @@ func Test(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			req1, _ := http.NewRequest("GET", "https://www.github.com", nil)
-			resp1, err := client1.Do(req1, Options{Proxy: u2})
+			resp1, err := client1.Do(req1, SetProxy(u2))
 			if err != nil {
 				t.Log(err)
 			} else {
