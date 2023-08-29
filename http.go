@@ -46,16 +46,18 @@ type Client struct {
 	mutex               sync.Mutex
 	globalProxy         *url.URL
 	globalTimeout       time.Duration
+	StopWhenContextDone bool
 	Proxy               *url.URL
 	Timeout             time.Duration
 	Context             *context.Context
-	StopWhenContextDone bool
+	Redirect            bool
 }
 
-type Options struct {
-	Proxy   *url.URL
-	Timeout time.Duration
-	Context *context.Context
+func (g *Client) redirect(req *http.Request, via []*http.Request) error {
+	if g.Redirect {
+		return nil
+	}
+	return http.ErrUseLastResponse
 }
 
 func (g *Client) new(timeout ...time.Duration) *http.Client {
@@ -64,26 +66,21 @@ func (g *Client) new(timeout ...time.Duration) *http.Client {
 	}
 	if len(timeout) > 0 && timeout[0] > 0 {
 		return &http.Client{
-			Transport: transCfg,   // disable tls verify
-			Timeout:   timeout[0], //必须设置一个超时，不然程序会抛出非自定义错误
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			}, //不跳转302
+			Transport:     transCfg,   // disable tls verify
+			Timeout:       timeout[0], //必须设置一个超时，不然程序会抛出非自定义错误
+			CheckRedirect: g.redirect,
 		}
 	}
 	return &http.Client{
-		Transport: transCfg,           // disable tls verify
-		Timeout:   defaultHttpTimeout, //必须设置一个超时，不然程序会抛出非自定义错误
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+		Transport:     transCfg,           // disable tls verify
+		Timeout:       defaultHttpTimeout, //必须设置一个超时，不然程序会抛出非自定义错误
+		CheckRedirect: g.redirect,
 	}
 }
 
-func (g *Client) Do(request *http.Request, option ...Options) (*http.Response, error) {
+func (g *Client) Do(request *http.Request, options ...Options) (*http.Response, error) {
 	g.mutex.Lock()
-	//只有第一次调用时会执行
-	if g.http == nil {
+	if g.http == nil { //只有第一次调用时会执行
 		g.http = g.new()
 	}
 	if globalTimeoutEnabled {
@@ -107,40 +104,17 @@ func (g *Client) Do(request *http.Request, option ...Options) (*http.Response, e
 		request.WithContext(*g.Context)
 	}
 	//设置了参数则只对本次请求生成
-	if len(option) > 0 {
+	if len(options) > 0 {
 		var httpClient = g.new()
-		currentProxy := g.http.Transport.(*http.Transport).Proxy
-		op := option[0]
-		newTimeout := op.Timeout
-		newProxy := op.Proxy
-		if newTimeout > 0 {
-			httpClient.Timeout = newTimeout //本次请求
-		} else {
-			if globalTimeoutEnabled {
-				httpClient.Timeout = globalTimeout //全局超时
-			} else {
-				if g.Timeout > 0 {
-					httpClient.Timeout = g.Timeout //初始化超时
-				} else {
-					httpClient.Timeout = defaultHttpTimeout //默认超时
-				}
-			}
-		}
-		if newProxy != nil {
-			httpClient.Transport.(*http.Transport).Proxy = http.ProxyURL(newProxy) //本次请求
-		} else {
-			if globalProxyEnabled {
-				httpClient.Transport.(*http.Transport).Proxy = http.ProxyURL(globalProxy) //全局代理
-			} else {
-				httpClient.Transport.(*http.Transport).Proxy = currentProxy //当前代理
-			}
-		}
-		if _, ok := request.Header["User-Agent"]; !ok {
+		httpClient.Timeout = g.Timeout
+		httpClient.Transport.(*http.Transport).Proxy = g.http.Transport.(*http.Transport).Proxy
+		if _, ok := request.Header["User-Agent"]; !ok { //设置默认UA头
 			request.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
 		}
-		if op.Context != nil {
-			request.WithContext(*op.Context)
+		if g.Context != nil {
+			request.WithContext(*g.Context)
 		}
+		applyOptions(httpClient, request, options...)
 		g.mutex.Unlock()
 		return httpClient.Do(request)
 	}
@@ -218,4 +192,68 @@ func SetDefaultTimeout(timeout time.Duration) {
 
 func GetOptionalUserAgents() []string {
 	return userAgents
+}
+
+type Options func(c *http.Client, request *http.Request)
+
+func SetTimeout(timeout time.Duration) Options {
+	return func(c *http.Client, r *http.Request) {
+		if timeout > 0 {
+			c.Timeout = timeout //本次请求
+		} else {
+			if globalTimeoutEnabled {
+				c.Timeout = globalTimeout //全局超时
+			} else {
+				if c.Timeout <= 0 {
+					c.Timeout = defaultHttpTimeout //默认超时
+				}
+				//否则使用g.timeout
+			}
+		}
+	}
+}
+
+func SetProxy(value *url.URL) Options {
+	return func(c *http.Client, r *http.Request) {
+		if value != nil { //是否新代理
+			c.Transport.(*http.Transport).Proxy = http.ProxyURL(value) //本次请求
+		} else {
+			if globalProxyEnabled {
+				c.Transport.(*http.Transport).Proxy = http.ProxyURL(globalProxy) //全局代理
+			}
+		}
+	}
+}
+
+func SetContext(value *context.Context) Options {
+	return func(c *http.Client, r *http.Request) {
+		if value != nil {
+			r.WithContext(*value)
+		}
+	}
+}
+
+func SetHeaders(headers []struct{ key, value string }) Options {
+	return func(c *http.Client, r *http.Request) {
+		for _, header := range headers {
+			r.Header.Set(header.key, header.value)
+		}
+	}
+}
+
+func EnableRedirect(value bool) Options {
+	return func(c *http.Client, r *http.Request) {
+		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if value {
+				return nil
+			}
+			return http.ErrUseLastResponse
+		}
+	}
+}
+
+func applyOptions(c *http.Client, r *http.Request, options ...Options) {
+	for _, option := range options {
+		option(c, r)
+	}
 }
