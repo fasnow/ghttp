@@ -37,6 +37,8 @@ var (
 
 	defaultHttpTimeoutMutex sync.Mutex
 	defaultHttpTimeout      = 20 * time.Second
+
+	once sync.Once
 )
 
 // Client 超时和代理的优先级
@@ -80,9 +82,9 @@ func (g *Client) new(timeout ...time.Duration) *http.Client {
 
 func (g *Client) Do(request *http.Request, options ...Options) (*http.Response, error) {
 	g.mutex.Lock()
-	if g.http == nil { //只有第一次调用时会执行
+	once.Do(func() {
 		g.http = g.new()
-	}
+	})
 	if globalTimeoutEnabled {
 		g.http.Timeout = globalTimeout
 	} else {
