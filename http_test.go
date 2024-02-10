@@ -20,7 +20,7 @@ func TestGlobalTimeout(t *testing.T) {
 	}
 
 	SetGlobalTimeout(1 * time.Second)
-	client2 := Client{Timeout: 1 * time.Second}
+	client2 := &Client{Timeout: 1 * time.Second}
 	req2, _ := http.NewRequest("GET", "https://www.baidu.com", nil)
 	rsp2, err := client2.Do(req2)
 	if err != nil {

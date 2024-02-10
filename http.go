@@ -37,8 +37,6 @@ var (
 
 	defaultHttpTimeoutMutex sync.Mutex
 	defaultHttpTimeout      = 20 * time.Second
-
-	once sync.Once
 )
 
 // Client 超时和代理的优先级
@@ -53,6 +51,7 @@ type Client struct {
 	Timeout             time.Duration
 	Context             *context.Context
 	Redirect            bool
+	once                sync.Once
 }
 
 func (g *Client) redirect(req *http.Request, via []*http.Request) error {
@@ -82,7 +81,7 @@ func (g *Client) new(timeout ...time.Duration) *http.Client {
 
 func (g *Client) Do(request *http.Request, options ...Options) (*http.Response, error) {
 	g.mutex.Lock()
-	once.Do(func() {
+	g.once.Do(func() {
 		g.http = g.new()
 	})
 	if globalTimeoutEnabled {
